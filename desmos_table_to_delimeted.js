@@ -1,25 +1,26 @@
 state = Calc.getState();
 
-const tables = state.expressions.list.filter((expr) => expr.type === 'table');
-const expressions = state.expressions.list.filter((expr) => expr.type === 'expression');
+const columnDelimiter = '\t';
+const rowDelimiter = '\n';
+
+const groupedExpressionList = state.expressions.list.reduce((acc, expr) => {
+	if (!acc[expr.type]) acc[expr.type] = [];
+	acc[expr.type].push(expr);
+	return acc;
+}, {});
+
+const tables = groupedExpressionList['table'] || [];
+const expressions = groupedExpressionList['expression'] || [];
 
 const analysis = {};
 for (const [k, v] of Object.entries(Calc.expressionAnalysis))
 	if (v?.evaluation) analysis[k] = v.evaluation;
 
-function extractBetweenBrackets(str) {
-	const firstBracket = str.indexOf('[');
-	const lastBracket = str.lastIndexOf(']');
-	if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket)
-		return str.slice(firstBracket + 1, lastBracket);
-	return '';
-}
-
 function printTable(columns) {
 	const maxLen = Math.max(...columns.map(c => c.length));
-	let output = "";
+	let output = '';
 	for (let i = 0; i < maxLen; i++)
-		output += columns.map(col => col[i] ?? "").join("\t") + "\n";
+		output += columns.map(col => col[i] ?? '').join(columnDelimiter) + rowDelimiter;
 	console.log(output);
 }
 
@@ -45,7 +46,7 @@ function waitForStability(delay = 30, checks = 3) {
 }
 
 async function evalLatex(latex) {
-	const id = "_tmp_eval_" + Math.random().toString(36).slice(2);
+	const id = '_tmp_eval_' + Math.random().toString(36).slice(2);
 
 	Calc.setExpression({ id, latex });
 	await waitForStability();
@@ -54,46 +55,40 @@ async function evalLatex(latex) {
 
 	Calc.removeExpression({ id });
 
-	return evalObj?.type === "Number" ? evalObj.value : undefined;
+	if (evalObj?.type === 'ListOfNumber') return evalObj.value;
+
+	return evalObj?.type === 'Number' ? evalObj.value : undefined;
 }
 
 async function resolveCell(str) {
 	if (/^-?\d*\.?\d+$/.test(str)) return Number(str);
 
-	const cleaned = str.replace(/\\left|\\right/g, "");
+	const cleaned = str.replace(/\\left|\\right/g, '');
 	const value = await evalLatex(cleaned);
 
 	return value ?? str;
 }
 
-(async () => {
-	for (const table of tables) {
-		console.log('--', 'table', table.id, `(${table.columns[0].latex})`, '--');
-		const tableColumns = [];
+for (const table of tables) {
+	console.log(`-- table ${table.id}  (${table.columns.map(c => c.latex).join(', ')}) --`);
+	const tableColumns = [];
 
-		for (const col of table.columns) {
-			if (col.values?.length > 0) {
-				// raw or expression cells
-				tableColumns.push(await Promise.all(col.values.map(resolveCell)));
-				continue;
-			}
-			if (col.latex) {
-				// calcultead column (list literal)
-
-				const query = `${col.latex}=`;
-				const matchingExpr = expressions.filter(exp => exp.latex.startsWith(query));
-				if (matchingExpr.length > 0) {
-					const formula = matchingExpr[0].latex.replace(query, '').replace('\\right', '');
-					const listExpr = extractBetweenBrackets(formula);
-					tableColumns.push(listExpr.split(',').map(Number));
-				}
-
-			}
-
-
-			tableColumns.push([]);
+	for (const col of table.columns) {
+		if (col.values?.length > 0) {
+			// raw or expression cells
+			tableColumns.push(await Promise.all(col.values.map(resolveCell)));
+			continue;
 		}
 
-		printTable(tableColumns);
+		if (col.latex) {
+			// calcultead column (list literal)
+			// evaluate the latex of the list header
+			tableColumns.push(await resolveCell(col.latex));
+			continue;
+		}
+
+		tableColumns.push([]);
 	}
-})();
+
+	printTable(tableColumns);
+}
